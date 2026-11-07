@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Finanzroll">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#f3f1ec">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<title>Finanzroll</title>
+<style>
+:root{--bg:#f3f1ec;--surface:#fff;--ink:#1b2430;--mute:#6b7480;--line:#dcd8cf;--mark:#ffd84d;--accent:#1f4d3a;color-scheme:light}
+@media (prefers-color-scheme:dark){:root{--bg:#14181d;--surface:#1c2229;--ink:#e8e6e1;--mute:#8d95a0;--line:#2c343d;--mark:#c9a227;--accent:#7fc4a0;color-scheme:dark}}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.4 -apple-system,system-ui,sans-serif}
+body{padding:env(safe-area-inset-top) 0 calc(env(safe-area-inset-bottom) + 24px)}
+header{position:sticky;top:0;z-index:5;background:var(--bg);padding:calc(env(safe-area-inset-top) + 10px) 16px 8px;border-bottom:1px solid var(--line)}
+.top{display:flex;align-items:baseline;justify-content:space-between}
+h1{font:700 28px/1.1 ui-serif,Georgia,serif;margin:0;letter-spacing:-.01em}
+.btns button{background:none;border:0;color:var(--accent);font:600 15px inherit;padding:6px 4px 6px 12px}
+.tabs{display:flex;gap:8px;margin-top:10px;overflow-x:auto;scrollbar-width:none}
+.tabs::-webkit-scrollbar{display:none}
+.tab{flex:none;border:1px solid var(--line);background:none;color:var(--ink);border-radius:99px;padding:6px 12px;font-size:14px}
+.tab.on{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.tab i{font-style:normal;background:var(--mark);color:#1b2430;border-radius:99px;padding:0 6px;margin-left:6px;font-size:12px;font-weight:700}
+main{max-width:720px;margin:0 auto;padding:0 16px}
+.item{display:block;padding:14px 0;border-bottom:1px solid var(--line);color:inherit;text-decoration:none}
+.meta{font-size:13px;color:var(--mute);display:flex;gap:8px;align-items:center}
+.item h2{font:600 19px/1.25 ui-serif,Georgia,serif;margin:4px 0 4px}
+.item p{margin:0;color:var(--mute);font-size:14px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.new h2{background:linear-gradient(transparent 62%,var(--mark) 62%);display:inline;box-decoration-break:clone;-webkit-box-decoration-break:clone}
+.item:not(.new) h2{color:var(--mute)}
+.empty,.status{padding:48px 0;text-align:center;color:var(--mute)}
+.status{padding:10px 0;font-size:13px;text-align:left}
+dialog{border:0;border-radius:16px;background:var(--surface);color:var(--ink);width:min(92vw,520px);padding:18px;margin:auto}
+dialog::backdrop{background:rgba(0,0,0,.45)}
+dialog h3{margin:0 0 12px;font:700 20px ui-serif,Georgia,serif}
+input{width:100%;font-size:16px;padding:11px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
+.row{display:flex;gap:8px;margin-top:10px}
+.row button{flex:1;padding:11px;border-radius:10px;border:1px solid var(--line);background:none;color:var(--ink);font-size:16px}
+.row .go{background:var(--accent);color:var(--bg);border-color:var(--accent);font-weight:600}
+.feed{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--line);gap:8px}
+.feed span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.feed button{background:none;border:0;color:#c0392b;font-size:15px}
+.err{color:#c0392b;font-size:14px;margin-top:8px;min-height:18px}
+</style>
+</head>
+<body>
+<header>
+  <div class="top"><h1>Finanzroll</h1>
+    <div class="btns"><button id="refresh">Aktualisieren</button><button id="manage">Quellen</button></div></div>
+  <div class="tabs" id="tabs"></div>
+</header>
+<main><div id="status" class="status"></div><div id="list"></div></main>
+
+<dialog id="dlg">
+  <h3>Quellen</h3>
+  <div id="feeds"></div>
+  <input id="url" type="url" inputmode="url" placeholder="Webseite oder Feed-Adresse" autocapitalize="off" autocorrect="off" style="margin-top:12px">
+  <div class="err" id="err"></div>
+  <div class="row"><button id="close">Schließen</button><button class="go" id="add">Hinzufügen</button></div>
+  <div class="row"><button id="markall">Alles als gelesen markieren</button></div>
+</dialog>
+
+<script>
+const API='https://api.rss2json.com/v1/api.json?rss_url=';
+const $=s=>document.querySelector(s);
+const load=(k,d)=>{try{return JSON.parse(localStorage.getItem(k))??d}catch{return d}};
+const save=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch{}};
+let feeds=load('feeds',[]);      // [{url,title}]
+let seen=load('seen',{});        // {itemId:true}
+let items=load('items',[]);      // cached
+let filter='all', firstRun=load('first',true);
+
+const esc=s=>String(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const strip=h=>{const d=document.createElement('div');d.innerHTML=h||'';return (d.textContent||'').trim().slice(0,220)};
+const ago=t=>{const m=(Date.now()-t)/6e4;if(m<60)return Math.max(1,Math.round(m))+' Min.';if(m<1440)return Math.round(m/60)+' Std.';return Math.round(m/1440)+' Tg.'};
+const host=u=>{try{return new URL(u).hostname.replace(/^www\./,'')}catch{return u}};
+
+async function fetchFeed(url){
+  const r=await fetch(API+encodeURIComponent(url));
+  const j=await r.json();
+  if(j.status!=='ok')throw new Error(j.message||'Kein Feed');
+  return j;
+}
+async function discover(input){
+  let u=input.trim(); if(!/^https?:\/\//.test(u))u='https://'+u;
+  const base=u.replace(/\/+$/,'');
+  for(const c of [u,base+'/feed',base+'/feed/',base+'/rss',base+'/feed.xml',base+'/rss.xml']){
+    try{const j=await fetchFeed(c);return {url:c,title:j.feed.title||host(c)}}catch{}
+  }
+  throw new Error('Kein Feed gefunden. Bitte die Feed-Adresse direkt eintragen.');
+}
+async function refresh(){
+  if(!feeds.length){render();return}
+  $('#status').textContent='Lade …';
+  const res=await Promise.allSettled(feeds.map(f=>fetchFeed(f.url).then(j=>({f,j}))));
+  const all=[];let fail=0;
+  res.forEach((r,i)=>{
+    if(r.status!=='fulfilled'){fail++;return}
+    const {f,j}=r.value;
+    j.items.forEach(it=>all.push({id:it.guid||it.link,src:f.title||host(f.url),url:it.link,title:it.title,desc:strip(it.description||it.content),t:new Date((it.pubDate||'').replace(' ','T')+(it.pubDate&&it.pubDate.length===19?'Z':'')).getTime()||Date.now()}));
+  });
+  if(all.length){
+    all.sort((a,b)=>b.t-a.t);
+    items=all.slice(0,300);
+    if(firstRun){items.forEach(i=>seen[i.id]=true);firstRun=false;save('first',false);save('seen',seen)}
+    save('items',items);
+  }
+  $('#status').textContent=fail?`${fail} Quelle(n) nicht erreichbar`:'';
+  render();
+}
+function render(){
+  const isNew=i=>!seen[i.id];
+  const nNew=items.filter(isNew).length;
+  const srcs=[...new Set(feeds.map(f=>f.title))];
+  $('#tabs').innerHTML=`<button class="tab ${filter==='all'?'on':''}" data-f="all">Alle</button>`+
+    `<button class="tab ${filter==='new'?'on':''}" data-f="new">Neu${nNew?`<i>${nNew}</i>`:''}</button>`+
+    srcs.map(s=>`<button class="tab ${filter===s?'on':''}" data-f="${esc(s)}">${esc(s)}</button>`).join('');
+  let list=items;
+  if(filter==='new')list=list.filter(isNew);else if(filter!=='all')list=list.filter(i=>i.src===filter);
+  $('#list').innerHTML=list.length?list.map(i=>`<a class="item ${isNew(i)?'new':''}" href="${esc(i.url)}" data-id="${esc(i.id)}" target="_blank" rel="noopener">
+    <div class="meta"><span>${esc(i.src)}</span><span>vor ${ago(i.t)}</span></div>
+    <h2>${esc(i.title)}</h2>${i.desc?`<p>${esc(i.desc)}</p>`:''}</a>`).join('')
+    :`<div class="empty">${feeds.length?(filter==='new'?'Alles gelesen.':'Keine Beiträge.'):'Noch keine Quellen. Tippe oben auf „Quellen“.'}</div>`;
+  if('setAppBadge' in navigator){nNew?navigator.setAppBadge(nNew).catch(()=>{}):navigator.clearAppBadge().catch(()=>{})}
+}
+function renderFeeds(){
+  $('#feeds').innerHTML=feeds.map((f,i)=>`<div class="feed"><span>${esc(f.title)}</span><button data-i="${i}">Entfernen</button></div>`).join('')||'<div class="empty" style="padding:12px 0">Noch keine Quellen.</div>';
+}
+$('#tabs').onclick=e=>{const b=e.target.closest('.tab');if(b){filter=b.dataset.f;render()}};
+$('#list').onclick=e=>{const a=e.target.closest('.item');if(a){seen[a.dataset.id]=true;save('seen',seen);setTimeout(render,300)}};
+$('#refresh').onclick=refresh;
+$('#manage').onclick=()=>{renderFeeds();$('#err').textContent='';$('#dlg').showModal()};
+$('#close').onclick=()=>{$('#dlg').close();refresh()};
+$('#markall').onclick=()=>{items.forEach(i=>seen[i.id]=true);save('seen',seen);render()};
+$('#feeds').onclick=e=>{const b=e.target.closest('button');if(!b)return;feeds.splice(+b.dataset.i,1);save('feeds',feeds);items=items.filter(i=>feeds.some(f=>f.title===i.src));save('items',items);renderFeeds();render()};
+$('#add').onclick=async()=>{
+  const v=$('#url').value.trim();if(!v)return;
+  $('#err').textContent='Suche Feed …';$('#add').disabled=true;
+  try{const f=await discover(v);
+    if(feeds.some(x=>x.url===f.url))throw new Error('Schon vorhanden.');
+    feeds.push(f);save('feeds',feeds);$('#url').value='';$('#err').textContent='';renderFeeds();
+  }catch(e){$('#err').textContent=e.message}
+  $('#add').disabled=false;
+};
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh()});
+render();refresh();
+if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
+</script>
+</body>
+</html>
