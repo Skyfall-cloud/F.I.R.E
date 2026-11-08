@@ -5,12 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-title" content="Finanzroll">
+<meta name="apple-mobile-web-app-title" content="F.I.R.E">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="theme-color" content="#f3f1ec">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icon-180.png">
-<title>Finanzroll</title>
+<title>F.I.R.E</title>
 <style>
 :root{--bg:#f3f1ec;--surface:#fff;--ink:#1b2430;--mute:#6b7480;--line:#dcd8cf;--mark:#ffd84d;--accent:#1f4d3a;color-scheme:light}
 @media (prefers-color-scheme:dark){:root{--bg:#14181d;--surface:#1c2229;--ink:#e8e6e1;--mute:#8d95a0;--line:#2c343d;--mark:#c9a227;--accent:#7fc4a0;color-scheme:dark}}
@@ -38,7 +38,7 @@ main{max-width:720px;margin:0 auto;padding:0 16px}
 dialog{border:0;border-radius:16px;background:var(--surface);color:var(--ink);width:min(92vw,520px);padding:18px;margin:auto}
 dialog::backdrop{background:rgba(0,0,0,.45)}
 dialog h3{margin:0 0 12px;font:700 20px ui-serif,Georgia,serif}
-input{width:100%;font-size:16px;padding:11px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
+input,textarea{width:100%;font-family:inherit;font-size:16px;padding:11px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
 .row{display:flex;gap:8px;margin-top:10px}
 .row button{flex:1;padding:11px;border-radius:10px;border:1px solid var(--line);background:none;color:var(--ink);font-size:16px}
 .row .go{background:var(--accent);color:var(--bg);border-color:var(--accent);font-weight:600}
@@ -50,7 +50,7 @@ input{width:100%;font-size:16px;padding:11px;border-radius:10px;border:1px solid
 </head>
 <body>
 <header>
-  <div class="top"><h1>Finanzroll</h1>
+  <div class="top"><h1>F.I.R.E</h1>
     <div class="btns"><button id="refresh">Aktualisieren</button><button id="manage">Quellen</button></div></div>
   <div class="tabs" id="tabs"></div>
 </header>
@@ -63,6 +63,13 @@ input{width:100%;font-size:16px;padding:11px;border-radius:10px;border:1px solid
   <div class="err" id="err"></div>
   <div class="row"><button id="close">Schließen</button><button class="go" id="add">Hinzufügen</button></div>
   <div class="row"><button id="markall">Alles als gelesen markieren</button></div>
+  <h3 style="margin-top:18px">Auf anderes Gerät übertragen</h3>
+  <textarea id="xfer" rows="3" placeholder="Hier erscheint der Export-Text. Zum Importieren Text einfügen." autocapitalize="off" autocorrect="off" spellcheck="false"></textarea>
+  <div class="row"><button id="export">Exportieren</button><button id="import">Importieren</button></div>
+  <div class="err" id="xerr"></div>
+  <h3 style="margin-top:18px">Eigener Abruf-Dienst</h3>
+  <input id="worker" type="url" inputmode="url" placeholder="https://….workers.dev (optional)" autocapitalize="off" autocorrect="off">
+  <div class="row"><button id="saveworker">Speichern</button></div>
 </dialog>
 
 <script>
@@ -80,7 +87,34 @@ const strip=h=>{const d=document.createElement('div');d.innerHTML=h||'';return (
 const ago=t=>{const m=(Date.now()-t)/6e4;if(m<60)return Math.max(1,Math.round(m))+' Min.';if(m<1440)return Math.round(m/60)+' Std.';return Math.round(m/1440)+' Tg.'};
 const host=u=>{try{return new URL(u).hostname.replace(/^www\./,'')}catch{return u}};
 
+let worker=load('worker','');
+function parseXml(txt){
+  const d=new DOMParser().parseFromString(txt,'text/xml');
+  if(d.querySelector('parsererror'))throw new Error('Kein Feed');
+  const t=(el,n)=>{const e=el.getElementsByTagName(n)[0];return e?e.textContent.trim():''};
+  const iso=v=>{const x=new Date(v);return isNaN(x)?'':x.toISOString()};
+  const ch=d.getElementsByTagName('channel')[0];
+  if(ch){
+    const items=[...d.getElementsByTagName('item')].map(i=>({title:t(i,'title'),link:t(i,'link'),guid:t(i,'guid')||t(i,'link'),pubDate:iso(t(i,'pubDate')||t(i,'dc:date')),description:t(i,'description')||t(i,'content:encoded')}));
+    return {status:'ok',feed:{title:t(ch,'title')},items};
+  }
+  const fe=d.getElementsByTagName('feed')[0];
+  if(fe){
+    const items=[...d.getElementsByTagName('entry')].map(e=>{
+      const ls=[...e.getElementsByTagName('link')];
+      const l=(ls.find(x=>!x.getAttribute('rel')||x.getAttribute('rel')==='alternate')||ls[0]);
+      return {title:t(e,'title'),link:l?l.getAttribute('href'):'',guid:t(e,'id'),pubDate:iso(t(e,'published')||t(e,'updated')),description:t(e,'summary')||t(e,'content')};
+    });
+    return {status:'ok',feed:{title:t(fe,'title')},items};
+  }
+  throw new Error('Kein Feed');
+}
 async function fetchFeed(url){
+  if(worker){
+    const r=await fetch(worker+(worker.includes('?')?'&':'?')+'url='+encodeURIComponent(url));
+    if(!r.ok)throw new Error('Fehler '+r.status);
+    return parseXml(await r.text());
+  }
   const r=await fetch(API+encodeURIComponent(url));
   const j=await r.json();
   if(j.status!=='ok')throw new Error(j.message||'Kein Feed');
@@ -134,8 +168,26 @@ function renderFeeds(){
 $('#tabs').onclick=e=>{const b=e.target.closest('.tab');if(b){filter=b.dataset.f;render()}};
 $('#list').onclick=e=>{const a=e.target.closest('.item');if(a){seen[a.dataset.id]=true;save('seen',seen);setTimeout(render,300)}};
 $('#refresh').onclick=refresh;
-$('#manage').onclick=()=>{renderFeeds();$('#err').textContent='';$('#dlg').showModal()};
+$('#manage').onclick=()=>{$('#xerr').textContent='';$('#worker').value=worker;renderFeeds();$('#err').textContent='';$('#dlg').showModal()};
 $('#close').onclick=()=>{$('#dlg').close();refresh()};
+$('#saveworker').onclick=()=>{worker=$('#worker').value.trim().replace(/\/+$/,'');save('worker',worker);$('#err').textContent=worker?'Gespeichert. Es wird jetzt der eigene Dienst genutzt.':'Gespeichert. Es wird der Standard-Dienst genutzt.'};
+$('#export').onclick=async()=>{
+  const t=JSON.stringify({feeds,worker});
+  $('#xfer').value=t;$('#xfer').select();
+  let ok=false;try{await navigator.clipboard.writeText(t);ok=true}catch{}
+  $('#xerr').textContent=ok?'Kopiert. Jetzt am anderen Gerät einfügen.':'Text markiert. Bitte manuell kopieren.';
+};
+$('#import').onclick=()=>{
+  try{
+    const d=JSON.parse($('#xfer').value.trim());
+    if(!d||!Array.isArray(d.feeds))throw 0;
+    let n=0;
+    d.feeds.forEach(f=>{if(f&&f.url&&!feeds.some(x=>x.url===f.url)){feeds.push({url:String(f.url),title:String(f.title||host(f.url))});n++}});
+    if(d.worker&&!worker){worker=String(d.worker);save('worker',worker);$('#worker').value=worker}
+    save('feeds',feeds);renderFeeds();render();
+    $('#xerr').textContent=n+' Quelle(n) hinzugefügt. Tippe auf „Schließen“, um zu laden.';
+  }catch{$('#xerr').textContent='Das hat nicht geklappt. Bitte den kompletten Export-Text einfügen.'}
+};
 $('#markall').onclick=()=>{items.forEach(i=>seen[i.id]=true);save('seen',seen);render()};
 $('#feeds').onclick=e=>{const b=e.target.closest('button');if(!b)return;feeds.splice(+b.dataset.i,1);save('feeds',feeds);items=items.filter(i=>feeds.some(f=>f.title===i.src));save('items',items);renderFeeds();render()};
 $('#add').onclick=async()=>{
