@@ -20,19 +20,23 @@ body{padding:env(safe-area-inset-top) 0 calc(env(safe-area-inset-bottom) + 24px)
 header{position:sticky;top:0;z-index:5;background:var(--bg);padding:calc(env(safe-area-inset-top) + 10px) 16px 8px;border-bottom:1px solid var(--line)}
 .top{display:flex;align-items:baseline;justify-content:space-between}
 h1{font:700 28px/1.1 ui-serif,Georgia,serif;margin:0;letter-spacing:-.01em}
-.btns button{background:none;border:0;color:var(--accent);font:600 15px inherit;padding:6px 4px 6px 12px}
+.btns button{white-space:nowrap;background:none;border:0;color:var(--accent);font:600 15px inherit;padding:6px 4px 6px 12px}
 .tabs{display:flex;gap:8px;margin-top:10px;overflow-x:auto;scrollbar-width:none}
 .tabs::-webkit-scrollbar{display:none}
 .tab{flex:none;border:1px solid var(--line);background:none;color:var(--ink);border-radius:99px;padding:6px 12px;font-size:14px}
 .tab.on{background:var(--ink);color:var(--bg);border-color:var(--ink)}
 .tab i{font-style:normal;background:var(--mark);color:#1b2430;border-radius:99px;padding:0 6px;margin-left:6px;font-size:12px;font-weight:700}
 main{max-width:720px;margin:0 auto;padding:0 16px}
-.item{display:block;padding:14px 0;border-bottom:1px solid var(--line);color:inherit;text-decoration:none}
+.item{position:relative;border-bottom:1px solid var(--line)}
+.lnk{display:block;padding:14px 40px 14px 0;color:inherit;text-decoration:none}
+.pin{position:absolute;top:8px;right:-6px;width:44px;height:44px;background:none;border:0;font-size:24px;color:var(--mute)}
+.pin.on{color:#e0a800}
+.bar select{width:100%;margin-top:8px;font-size:15px;padding:9px;border-radius:10px;border:1px solid var(--line);background:var(--surface);color:var(--ink)}
 .meta{font-size:13px;color:var(--mute);display:flex;gap:8px;align-items:center}
 .item h2{font:600 19px/1.25 ui-serif,Georgia,serif;margin:4px 0 4px}
 .item p{margin:0;color:var(--mute);font-size:14px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .new h2{background:linear-gradient(transparent 62%,var(--mark) 62%);display:inline;box-decoration-break:clone;-webkit-box-decoration-break:clone}
-.item:not(.new) h2{color:var(--mute)}
+.item:not(.new):not(.keep) h2{color:var(--mute)}
 .empty,.status{padding:48px 0;text-align:center;color:var(--mute)}
 .status{padding:10px 0;font-size:13px;text-align:left}
 dialog{border:0;border-radius:16px;background:var(--surface);color:var(--ink);width:min(92vw,520px);padding:18px;margin:auto}
@@ -51,8 +55,8 @@ input,textarea{width:100%;font-family:inherit;font-size:16px;padding:11px;border
 <body>
 <header>
   <div class="top"><h1>F.I.R.E</h1>
-    <div class="btns"><button id="refresh">Aktualisieren</button><button id="manage">Quellen</button></div></div>
-  <div class="tabs" id="tabs"></div>
+    <div class="btns"><button id="readall">Alle gelesen</button><button id="refresh" aria-label="Aktualisieren">↻</button><button id="manage">Quellen</button></div></div>
+  <div class="bar"><div class="tabs" id="tabs"></div><select id="src" aria-label="Blog wählen"></select></div>
 </header>
 <main><div id="status" class="status"></div><div id="list"></div></main>
 
@@ -80,7 +84,7 @@ const save=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch{}};
 let feeds=load('feeds',[]);      // [{url,title}]
 let seen=load('seen',{});        // {itemId:true}
 let items=load('items',[]);      // cached
-let filter='all', firstRun=load('first',true);
+let filter='all', src='', saved=load('saved',{}), firstRun=load('first',true);
 
 const esc=s=>String(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const strip=h=>{const d=document.createElement('div');d.innerHTML=h||'';return (d.textContent||'').trim().slice(0,220)};
@@ -132,12 +136,13 @@ async function refresh(){
   if(!feeds.length){render();return}
   $('#status').textContent='Lade …';
   const res=await Promise.allSettled(feeds.map(f=>fetchFeed(f.url).then(j=>({f,j}))));
-  const all=[];let fail=0;
+  const all=[];let fail=0;const failed=new Set();
   res.forEach((r,i)=>{
-    if(r.status!=='fulfilled'){fail++;return}
+    if(r.status!=='fulfilled'){fail++;failed.add(feeds[i].title);return}
     const {f,j}=r.value;
     j.items.forEach(it=>all.push({id:it.guid||it.link,src:f.title||host(f.url),url:it.link,title:it.title,desc:strip(it.description||it.content),t:new Date((it.pubDate||'').replace(' ','T')+(it.pubDate&&it.pubDate.length===19?'Z':'')).getTime()||Date.now()}));
   });
+  items.filter(i=>failed.has(i.src)).forEach(i=>all.push(i));
   if(all.length){
     all.sort((a,b)=>b.t-a.t);
     items=all.slice(0,300);
@@ -148,31 +153,50 @@ async function refresh(){
   render();
 }
 function render(){
-  const isNew=i=>!seen[i.id];
-  const nNew=items.filter(isNew).length;
-  const srcs=[...new Set(feeds.map(f=>f.title))];
-  $('#tabs').innerHTML=`<button class="tab ${filter==='all'?'on':''}" data-f="all">Alle</button>`+
-    `<button class="tab ${filter==='new'?'on':''}" data-f="new">Neu${nNew?`<i>${nNew}</i>`:''}</button>`+
-    srcs.map(s=>`<button class="tab ${filter===s?'on':''}" data-f="${esc(s)}">${esc(s)}</button>`).join('');
-  let list=items;
-  if(filter==='new')list=list.filter(isNew);else if(filter!=='all')list=list.filter(i=>i.src===filter);
-  $('#list').innerHTML=list.length?list.map(i=>`<a class="item ${isNew(i)?'new':''}" href="${esc(i.url)}" data-id="${esc(i.id)}" target="_blank" rel="noopener">
+  const cut=Date.now()-14*864e5;
+  const isNew=i=>!seen[i.id]&&i.t>=cut;
+  const names=feeds.map(f=>f.title);
+  if(src&&!names.includes(src))src='';
+  $('#src').innerHTML='<option value="">Alle Blogs</option>'+names.map(n=>`<option value="${esc(n)}"${n===src?' selected':''}>${esc(n)}</option>`).join('');
+  const base=items.filter(i=>!src||i.src===src);
+  const nNew=base.filter(isNew).length;
+  const savedList=Object.values(saved).filter(i=>!src||i.src===src).sort((a,b)=>b.savedAt-a.savedAt);
+  const tab=(k,l,n)=>`<button class="tab ${filter===k?'on':''}" data-f="${k}">${l}${n?`<i>${n}</i>`:''}</button>`;
+  $('#tabs').innerHTML=tab('all','Alle')+tab('new','Neu',nNew)+tab('saved','Gemerkt');
+  let list=filter==='saved'?savedList:filter==='new'?base.filter(isNew):base;
+  $('#list').innerHTML=list.length?list.map(i=>{
+    const cls=filter==='saved'?'keep':isNew(i)?'new':'';
+    const on=!!saved[i.id];
+    return `<div class="item ${cls}"><a class="lnk" href="${esc(i.url)}" data-id="${esc(i.id)}" target="_blank" rel="noopener">
     <div class="meta"><span>${esc(i.src)}</span><span>vor ${ago(i.t)}</span></div>
-    <h2>${esc(i.title)}</h2>${i.desc?`<p>${esc(i.desc)}</p>`:''}</a>`).join('')
-    :`<div class="empty">${feeds.length?(filter==='new'?'Alles gelesen.':'Keine Beiträge.'):'Noch keine Quellen. Tippe oben auf „Quellen“.'}</div>`;
-  if('setAppBadge' in navigator){nNew?navigator.setAppBadge(nNew).catch(()=>{}):navigator.clearAppBadge().catch(()=>{})}
+    <h2>${esc(i.title)}</h2>${i.desc?`<p>${esc(i.desc)}</p>`:''}</a>
+    <button class="pin ${on?'on':''}" data-id="${esc(i.id)}" aria-label="Merken">${on?'★':'☆'}</button></div>`}).join('')
+    :`<div class="empty">${!feeds.length?'Noch keine Quellen. Tippe oben auf „Quellen“.':filter==='saved'?'Noch nichts gemerkt. Tippe bei einem Beitrag auf ☆.':filter==='new'?'Keine neuen Beiträge der letzten 14 Tage.':'Keine Beiträge.'}</div>`;
+  if('setAppBadge' in navigator){const n=items.filter(isNew).length;n?navigator.setAppBadge(n).catch(()=>{}):navigator.clearAppBadge().catch(()=>{})}
 }
 function renderFeeds(){
   $('#feeds').innerHTML=feeds.map((f,i)=>`<div class="feed"><span>${esc(f.title)}</span><button data-i="${i}">Entfernen</button></div>`).join('')||'<div class="empty" style="padding:12px 0">Noch keine Quellen.</div>';
 }
 $('#tabs').onclick=e=>{const b=e.target.closest('.tab');if(b){filter=b.dataset.f;render()}};
-$('#list').onclick=e=>{const a=e.target.closest('.item');if(a){seen[a.dataset.id]=true;save('seen',seen);setTimeout(render,300)}};
+$('#src').onchange=e=>{src=e.target.value;render()};
+$('#list').onclick=e=>{
+  const pin=e.target.closest('.pin');
+  if(pin){
+    const id=pin.dataset.id;
+    if(saved[id])delete saved[id];
+    else{const it=items.find(x=>x.id===id);if(it)saved[id]={...it,savedAt:Date.now()}}
+    save('saved',saved);render();return;
+  }
+  const a=e.target.closest('.lnk');
+  if(a){seen[a.dataset.id]=true;save('seen',seen);setTimeout(render,300)}
+};
+$('#readall').onclick=()=>{items.forEach(i=>{if(!src||i.src===src)seen[i.id]=true});save('seen',seen);render()};
 $('#refresh').onclick=refresh;
 $('#manage').onclick=()=>{$('#xerr').textContent='';$('#worker').value=worker;renderFeeds();$('#err').textContent='';$('#dlg').showModal()};
 $('#close').onclick=()=>{$('#dlg').close();refresh()};
 $('#saveworker').onclick=()=>{worker=$('#worker').value.trim().replace(/\/+$/,'');save('worker',worker);$('#err').textContent=worker?'Gespeichert. Es wird jetzt der eigene Dienst genutzt.':'Gespeichert. Es wird der Standard-Dienst genutzt.'};
 $('#export').onclick=async()=>{
-  const t=JSON.stringify({feeds,worker});
+  const t=JSON.stringify({feeds,worker,saved});
   $('#xfer').value=t;$('#xfer').select();
   let ok=false;try{await navigator.clipboard.writeText(t);ok=true}catch{}
   $('#xerr').textContent=ok?'Kopiert. Jetzt am anderen Gerät einfügen.':'Text markiert. Bitte manuell kopieren.';
@@ -183,6 +207,7 @@ $('#import').onclick=()=>{
     if(!d||!Array.isArray(d.feeds))throw 0;
     let n=0;
     d.feeds.forEach(f=>{if(f&&f.url&&!feeds.some(x=>x.url===f.url)){feeds.push({url:String(f.url),title:String(f.title||host(f.url))});n++}});
+    if(d.saved&&typeof d.saved==='object'){Object.entries(d.saved).forEach(([k,v])=>{if(v&&v.url&&!saved[k])saved[k]=v});save('saved',saved)}
     if(d.worker&&!worker){worker=String(d.worker);save('worker',worker);$('#worker').value=worker}
     save('feeds',feeds);renderFeeds();render();
     $('#xerr').textContent=n+' Quelle(n) hinzugefügt. Tippe auf „Schließen“, um zu laden.';
